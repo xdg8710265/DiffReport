@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Reports (generated HTML, can be large)
+reports/*.html
+
+# Config with local paths
+scan_config.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+temp/
+tmp/
+*.tmp
+
+# Virtual env
+venv/
+.venv/

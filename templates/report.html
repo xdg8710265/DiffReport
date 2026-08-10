@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>代码对比扫描报告 - {{ repo_name }}</title>
+<style>
+/* ========== 报告布局 ========== */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #24292e; line-height: 1.6; background: #f6f8fa; }
+.container { max-width: 1800px; margin: 0 auto; padding: 20px; }
+
+.header { background: linear-gradient(135deg, #24292e 0%, #444d56 100%); color: #fff; padding: 32px 40px; border-radius: 8px; margin-bottom: 24px; }
+.header h1 { font-size: 24px; margin-bottom: 8px; }
+.header .meta { font-size: 13px; opacity: 0.8; }
+.header .meta span { margin-right: 24px; }
+
+.card { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 20px; overflow: hidden; }
+.card-header { padding: 16px 24px; border-bottom: 1px solid #e1e4e8; font-weight: 600; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+.card-body { padding: 24px; }
+
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; }
+.stat-item { text-align: center; padding: 16px; background: #f6f8fa; border-radius: 6px; }
+.stat-value { font-size: 32px; font-weight: 700; color: #0366d6; }
+.stat-value.positive { color: #28a745; }
+.stat-value.negative { color: #cb2431; }
+.stat-label { font-size: 12px; color: #586069; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* 文件列表 */
+.file-list { max-height: 500px; overflow-y: auto; }
+.file-item { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #f0f0f0; font-family: 'SFMono-Regular',Consolas,monospace; font-size: 13px; cursor: pointer; transition: background 0.15s; }
+.file-item:hover { background: #f0f7ff; }
+.file-item.active { background: #0366d6; color: #fff; }
+.file-item .icon { margin-right: 8px; font-size: 16px; flex-shrink: 0; }
+.file-item .name { flex: 1; word-break: break-all; }
+
+.compare-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.compare-table th { background: #f6f8fa; padding: 8px 12px; text-align: left; border-bottom: 1px solid #e1e4e8; font-weight: 600; }
+.compare-table td { padding: 8px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+
+.tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+.tag-high { background: #ffeef0; color: #cb2431; }
+.tag-medium { background: #fff5b1; color: #735c0f; }
+.tag-low { background: #f0f7ff; color: #0366d6; }
+
+.alert { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+.alert-warning { background: #fff5b1; border: 1px solid #f0c000; color: #735c0f; }
+.alert-info { background: #f0f7ff; border: 1px solid #c8e1ff; color: #0366d6; }
+.alert-error { background: #ffeef0; border: 1px solid #ffdce0; color: #cb2431; }
+
+.test-suggestions { background: #f0f7ff; border: 1px solid #c8e1ff; border-radius: 6px; padding: 16px; }
+.test-suggestions li { margin: 4px 0 4px 20px; color: #0366d6; }
+
+	/* diff 容器 */
+	#diff-container { border: 1px solid #e1e4e8; border-radius: 6px; }
+	#diff-placeholder { display: flex; align-items: center; justify-content: center; min-height: 200px; color: #586069; font-size: 15px; }
+	#diff-loading { display: none; align-items: center; justify-content: center; min-height: 200px; color: #586069; font-size: 14px; }
+	/* diff 内容区：固定高度、支持纵横滚动 */
+	#diff-content { max-height: 78vh; overflow: auto; }
+
+	/* diff2html：去掉 overflow-y:hidden 让内容自由流到 #diff-content */
+	.d2h-file-diff { overflow-y: visible !important; }
+	.d2h-file-side-diff { overflow-x: scroll !important; overflow-y: visible !important; }
+
+	.footer { text-align: center; color: #586069; font-size: 12px; margin-top: 32px; padding: 16px; }
+
+	.back-to-top { position: fixed; bottom: 24px; right: 24px; background: #0366d6; color: #fff; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; text-decoration: none; box-shadow: 0 2px 8px rgba(0,0,0,0.2); font-size: 20px; opacity: 0; transition: opacity 0.3s; z-index: 1000; cursor: pointer; }
+	.back-to-top.visible { opacity: 1; }
+
+	/* 对比入口表单 */
+	.scan-form { background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%); border: 2px solid #c8e1ff; border-radius: 8px; padding: 16px 20px; margin-bottom: 20px; }
+	.scan-form .form-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+	.scan-form .form-group { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
+	.scan-form label { font-size: 12px; font-weight: 600; color: #586069; text-transform: uppercase; letter-spacing: 0.5px; }
+	.scan-form select, .scan-form input { padding: 8px 12px; border: 1px solid #d1d5da; border-radius: 4px; font-size: 14px; font-family: 'SFMono-Regular',Consolas,monospace; background: #fff; min-width: 180px; }
+	.scan-form select:focus, .scan-form input:focus { outline: none; border-color: #0366d6; box-shadow: 0 0 0 3px rgba(3,102,214,.15); }
+	.scan-form .btn { padding: 9px 20px; border: none; border-radius: 4px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+	.scan-form .btn-primary { background: #0366d6; color: #fff; }
+	.scan-form .btn-primary:hover { background: #0256b9; }
+	.scan-form .btn-primary:disabled { background: #959da5; cursor: not-allowed; }
+	.scan-form .btn-refresh { background: #f6f8fa; color: #24292e; border: 1px solid #d1d5da; font-size: 12px; padding: 8px 12px; }
+	.scan-form .status-msg { margin-top: 10px; font-size: 13px; display: none; padding: 8px 12px; border-radius: 4px; }
+	.scan-form .status-msg.info { background: #f0f7ff; color: #0366d6; display: block; }
+	.scan-form .status-msg.success { background: #dcffe4; color: #28a745; display: block; }
+	.scan-form .status-msg.error { background: #ffeef0; color: #cb2431; display: block; }
+
+	/* 搜索高亮 */
+.d2h-file-header.target-flash { animation: flash 1.5s ease; }
+@keyframes flash { 0%,100% { background: #f7f7f7; } 50% { background: #fff5b1; } }
+
+	@media (max-width: 768px) {
+	  .header { padding: 20px; }
+	  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+	  .container { padding: 10px; }
+	  .file-list { max-height: 300px; }
+	}
+
+	/* 文件夹分组 */
+	.folder-group { border-bottom: 1px solid #e1e4e8; }
+	.folder-group:last-child { border-bottom: none; }
+	.folder-header {
+	  display: flex; align-items: center; gap: 8px;
+	  padding: 10px 16px; cursor: pointer; user-select: none;
+	  background: #f6f8fa; transition: background 0.15s;
+	}
+	.folder-header:hover { background: #e8ecf0; }
+	.folder-arrow {
+	  font-size: 10px; transition: transform 0.2s;
+	  color: #586069; display: inline-block; width: 14px; text-align: center;
+	}
+	.folder-group.open .folder-arrow { transform: rotate(90deg); }
+	.folder-name { font-weight: 600; font-size: 14px; color: #24292e; }
+	.folder-count { margin-left: auto; font-size: 12px; color: #586069; }
+	.folder-files { overflow: hidden; }
+	.file-item {
+	  display: flex; align-items: center; gap: 8px;
+	  padding: 6px 16px 6px 36px; cursor: pointer; transition: background 0.1s;
+	}
+	.file-item:hover { background: #f1f8ff; }
+	.file-item.active { background: #e8f0fe; border-left: 3px solid #0366d6; }
+	.file-item .icon { font-size: 14px; flex-shrink: 0; }
+	.file-item .name { font-size: 13px; color: #24292e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.file-item .path-hint { font-size: 11px; color: #959da5; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+	</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>📊 代码对比扫描报告</h1>
+    <div class="meta">
+      <span>📦 {{ repo_name }}</span>
+	    <span>🕐 {{ generated_at }}</span>
+	    </div>
+	  </div>
+
+	  <!-- 对比入口表单 -->
+	  <div class="scan-form">
+	    <div class="form-row">
+	      <div class="form-group">
+	        <label>📦 仓库</label>
+	        <input type="text" id="scan-repo" value="{{ repo_path or '' }}" placeholder="E:/zt-oehr-personnel" style="min-width:280px;">
+	      </div>
+	      <div class="form-group">
+	        <label>🔖 基线版本 (old)</label>
+	        <input type="text" id="scan-old" value="{{ old_ref }}" placeholder="master" style="min-width:140px;">
+	      </div>
+	      <div class="form-group">
+	        <label>🆕 对比版本 (new)</label>
+	        <select id="scan-new" style="min-width:200px;">
+	          <option value="">— 选择分支 —</option>
+	        </select>
+	      </div>
+	      <div class="form-group" style="justify-content:flex-end;">
+	        <button class="btn btn-refresh" onclick="loadBranches()" title="刷新分支列表">🔄</button>
+	      </div>
+	      <div class="form-group" style="justify-content:flex-end;">
+	        <button class="btn btn-primary" id="scan-btn" onclick="startScan()">🔍 开始对比</button>
+	      </div>
+	    </div>
+	    <div id="scan-status" class="status-msg"></div>
+	  </div>
+
+  <!-- 提示：页面使用懒加载 -->
+  {% if is_lazy %}
+  <div class="alert alert-info" style="display:flex;align-items:center;gap:8px;">
+    💡 <strong>懒加载模式：</strong>点击左侧文件列表查看差异详情，每次仅渲染一个文件，避免浏览器卡顿
+    {% if filtered_note %}<span style="margin-left:auto;opacity:0.7;">{{ filtered_note }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- 版本对比 -->
+  <div class="card">
+    <div class="card-header">🔖 版本对比 — <span style="color:#586069;font-weight:400;">{{ old_ref }} (基线) → {{ new_ref }} (提测)</span></div>
+    <div class="card-body">
+      <table class="compare-table">
+        <tr><th></th><th>旧版本（基线）</th><th>新版本（提测）</th></tr>
+        <tr><td>引用</td><td><code>{{ old_ref }}</code></td><td><code>{{ new_ref }}</code></td></tr>
+        <tr><td>Commit SHA</td><td><code>{{ old_info.short_sha }}</code></td><td><code>{{ new_info.short_sha }}</code></td></tr>
+        <tr><td>提交信息</td><td>{{ old_info.message }}</td><td>{{ new_info.message }}</td></tr>
+        <tr><td>作者</td><td>{{ old_info.author }}</td><td>{{ new_info.author }}</td></tr>
+        <tr><td>日期</td><td>{{ old_info.date }}</td><td>{{ new_info.date }}</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 概览 -->
+  <div class="card">
+    <div class="card-header">📈 变更概览</div>
+    <div class="card-body">
+      <div class="stat-grid">
+        <div class="stat-item">
+          <div class="stat-value">{{ diff_stats.files_changed }}</div>
+          <div class="stat-label">变更文件</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value positive">+{{ diff_stats.insertions }}</div>
+          <div class="stat-label">新增行（绿色）</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value negative">-{{ diff_stats.deletions }}</div>
+          <div class="stat-label">删除行（红色）</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value {% if net_change > 0 %}positive{% elif net_change < 0 %}negative{% endif %}">
+            {% if net_change >= 0 %}+{% endif %}{{ net_change }}
+          </div>
+          <div class="stat-label">净变化</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+	  <!-- 文件列表（文件夹分组） -->
+	  <div class="card">
+	    <div class="card-header">📁 变更文件列表 <span style="color:#586069;font-weight:400;font-size:12px;">— 点击文件名查看差异</span></div>
+	    <div class="card-body" style="padding:0;">
+	      <div class="file-list">
+	      {% for group in file_groups %}
+	        <div class="folder-group">
+	          <div class="folder-header" onclick="toggleFolder(this)">
+	            <span class="folder-arrow">▶</span>
+	            <span class="folder-name">{{ group.group }}</span>
+	            <span class="folder-count">{{ group.count }} 个文件</span>
+	          </div>
+	          <div class="folder-files" style="display:none;">
+	            {% for file in group.files %}
+	              {% set ext = file.split('.')[-1] if '.' in file else '' %}
+	              <div class="file-item" onclick="openFileDiff('{{ file | replace("'", "\\'") }}')" data-file="{{ file | replace('"', '&quot;') }}">
+	                <span class="icon">
+	                  {% if file.endswith('.java') %}☕
+	                  {% elif file.endswith('.xml') or file.endswith('.yml') or file.endswith('.yaml') %}⚙️
+	                  {% elif file.endswith('.sql') %}🗄️
+	                  {% elif file.endswith('.js') or file.endswith('.ts') %}📜
+	                  {% else %}📄{% endif %}
+	                </span>
+	                <span class="name">{{ file.split('/')[-1] }}</span>
+	                <span class="path-hint">{{ file }}</span>
+	              </div>
+	            {% endfor %}
+	          </div>
+	        </div>
+	      {% endfor %}
+	      </div>
+	    </div>
+	  </div>
+
+  <!-- 差异区域（懒加载） -->
+  <div class="card">
+    <div class="card-header" id="diff-header">
+      🔍 详细代码差异
+      <span style="color:#586069;font-weight:400;font-size:12px;">
+        {% if is_lazy %}— 点击左侧文件列表加载{% else %}— 🟢绿色=新增 | 🔴红色=删除{% endif %}
+      </span>
+      <span id="diff-file-name" style="margin-left:auto;color:#0366d6;font-weight:600;font-size:13px;display:none;"></span>
+    </div>
+	    <div class="card-body" style="padding: 0;">
+	      <div id="diff-container">
+        {% if is_lazy %}
+        <div id="diff-placeholder">👈 点击左侧文件列表查看代码差异</div>
+        <div id="diff-loading">⏳ 加载中...</div>
+        <div id="diff-content"></div>
+        {% else %}
+        {{ diff_html | safe }}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- 影响分析 -->
+  <div class="card">
+    <div class="card-header">⚠️ Java 变更影响分析</div>
+    <div class="card-body">
+      {% if impact is none %}
+        <div class="alert alert-info">未执行影响分析（可添加 --impact 参数启用）</div>
+      {% elif not impact.success %}
+        <div class="alert alert-warning"><strong>分析未完成</strong><br>{{ impact.error_message | replace('\n', '<br>') }}</div>
+      {% elif impact.success %}
+        {% if impact.fallback %}
+          <div class="alert alert-warning">⚠️ jcci AST 分析受限，以下为基于文件路径的启发式分析</div>
+        {% endif %}
+        {% if impact.java_files_by_category %}
+          <div style="margin-bottom:16px;">
+            <strong>📊 Java 文件变更分类:</strong>
+            <table class="compare-table" style="margin-top:8px;">
+              <tr><th>分类</th><th>数量</th><th>风险</th></tr>
+              {% for cat, files in impact.java_files_by_category.items() %}
+              {% if files %}
+              <tr>
+                <td>
+                  {% if cat == 'controller' %}🎮 Controller
+                  {% elif cat == 'service' %}🔧 Service
+                  {% elif cat == 'service_impl' %}⚙️ Service Impl
+                  {% elif cat == 'mapper' %}🗄️ Mapper
+                  {% elif cat == 'dao' %}📂 DAO
+                  {% elif cat == 'entity' %}📦 Entity
+                  {% elif cat == 'dto' %}📋 DTO
+                  {% elif cat == 'vo' %}📝 VO
+                  {% elif cat == 'util' %}🛠️ Util
+                  {% elif cat == 'config' %}⚡ Config
+                  {% elif cat == 'enums' %}🔢 Enum
+                  {% else %}📄 Other{% endif %}
+                </td>
+                <td>{{ files | length }}</td>
+                <td>
+                  {% if cat in ('controller', 'config') %}<span class="tag tag-high">高</span>
+                  {% elif cat in ('service', 'service_impl', 'util') %}<span class="tag tag-medium">中</span>
+                  {% else %}<span class="tag tag-low">低</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endif %}
+              {% endfor %}
+            </table>
+          </div>
+        {% endif %}
+        {% if impact.test_suggestions %}
+          <div class="test-suggestions">
+            <strong>📋 测试建议:</strong>
+            <ul>{% for s in impact.test_suggestions %}<li>{{ s }}</li>{% endfor %}</ul>
+          </div>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="footer">代码对比扫描工具 | 生成于 {{ generated_at }} | diff2html + jcci</div>
+</div>
+
+<a href="#" class="back-to-top" id="backTop">↑</a>
+
+{% if is_lazy %}
+<!-- diff2html 全局样式和脚本（所有文件共享） -->
+{{ diff_html | safe }}
+
+<!-- 文件 diff 数据（懒加载） -->
+<script type="text/javascript">
+// 所有文件的 diff HTML 片段，按键（文件路径）索引
+var __DIFF_DATA__ = {{ file_diffs_json | safe }};
+var __ACTIVE_FILE__ = null;
+
+function openFileDiff(filePath) {
+    var container = document.getElementById('diff-content');
+    var placeholder = document.getElementById('diff-placeholder');
+    var loading = document.getElementById('diff-loading');
+    var fileNameEl = document.getElementById('diff-file-name');
+
+    if (!container) {
+        alert('页面结构异常：找不到 diff-content 元素');
+        return;
+    }
+
+    // 点击同一个文件：滚动到 diff 区域
+    if (__ACTIVE_FILE__ === filePath) {
+        document.getElementById('diff-container').scrollIntoView({ behavior: 'smooth' });
+        return;
+    }
+
+    // 高亮当前文件
+    var items = document.querySelectorAll('.file-item');
+    for (var i = 0; i < items.length; i++) {
+        items[i].classList.remove('active');
+    }
+	    var escapedPath = filePath.replace(/"/g, '&quot;');
+		    var activeItem = document.querySelector('.file-item[data-file="' + escapedPath + '"]');
+		    if (activeItem) {
+		        activeItem.classList.add('active');
+		        // 自动展开所属文件夹
+		        var folder = activeItem.closest('.folder-group');
+		        if (folder) {
+		            folder.classList.add('open');
+		            var files = folder.querySelector('.folder-files');
+		            if (files) files.style.display = 'block';
+		        }
+		    }
+
+    // 查找 diff 数据（先精确匹配，再模糊匹配）
+    var diffHtml = __DIFF_DATA__[filePath];
+    if (!diffHtml) {
+        var fileName = filePath.split('/').pop();
+        for (var key in __DIFF_DATA__) {
+            if (__DIFF_DATA__.hasOwnProperty(key)) {
+                if (key === filePath || key.indexOf(fileName) !== -1) {
+                    diffHtml = __DIFF_DATA__[key];
+                    filePath = key;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (diffHtml) {
+        // 渲染 diff
+        placeholder.style.display = 'none';
+        if (loading) loading.style.display = 'none';
+        container.innerHTML = diffHtml;
+        __ACTIVE_FILE__ = filePath;
+        fileNameEl.textContent = '当前: ' + filePath.split('/').pop();
+        fileNameEl.style.display = 'inline';
+
+        // 滚动到 diff 区域
+        document.getElementById('diff-container').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+        placeholder.style.display = 'block';
+        placeholder.innerHTML = '<span style=\"color:#cb2431;\">⚠️ 未找到文件差异数据: ' + filePath + '</span>';
+        if (loading) loading.style.display = 'none';
+        container.innerHTML = '';
+        __ACTIVE_FILE__ = null;
+        fileNameEl.style.display = 'none';
+    }
+}
+</script>
+
+<script type="text/javascript">
+// 文件夹展开/折叠
+function toggleFolder(header) {
+    var group = header.parentElement;
+    group.classList.toggle('open');
+    var files = group.querySelector('.folder-files');
+    if (files.style.display === 'none' || files.style.display === '') {
+        files.style.display = 'block';
+    } else {
+        files.style.display = 'none';
+    }
+}
+</script>
+{% endif %}
+
+<script>
+// ── 对比入口：分支加载 & 扫描提交 ──
+var SCAN_SERVER = 'http://localhost:8899';
+
+function loadBranches() {
+    var repo = document.getElementById('scan-repo').value.trim();
+    if (!repo) { showStatus('请先填写仓库路径', 'info'); return; }
+
+    var sel = document.getElementById('scan-new');
+    sel.innerHTML = '<option value="">⏳ 加载中...</option>';
+    showStatus('正在获取分支列表...', 'info');
+
+    fetch(SCAN_SERVER + '/branches?repo=' + encodeURIComponent(repo))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.success) {
+                sel.innerHTML = '<option value="">— 选择分支 —</option>';
+                (data.branches || []).forEach(function(b) {
+                    sel.innerHTML += '<option value="' + b + '">' + b + '</option>';
+                });
+                showStatus('已加载 ' + data.branches.length + ' 个分支', 'success');
+            } else {
+                sel.innerHTML = '<option value="">— 加载失败 —</option>';
+                showStatus('❌ ' + data.error, 'error');
+            }
+        })
+        .catch(function(err) {
+            sel.innerHTML = '<option value="">— 网络错误 —</option>';
+            showStatus('❌ 无法连接扫描服务: ' + err.message, 'error');
+        });
+}
+
+function startScan() {
+    var repo = document.getElementById('scan-repo').value.trim();
+    var old = document.getElementById('scan-old').value.trim() || 'master';
+    var newRef = document.getElementById('scan-new').value;
+
+    if (!repo || !newRef) {
+        showStatus('请填写仓库路径并选择对比分支', 'error');
+        return;
+    }
+
+    var btn = document.getElementById('scan-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ 扫描中...';
+    showStatus('正在执行对比扫描（全文件上下文，约需 1-2 分钟）...', 'info');
+
+    var url = SCAN_SERVER + '/scan?repo=' + encodeURIComponent(repo)
+        + '&old=' + encodeURIComponent(old)
+        + '&new=' + encodeURIComponent(newRef)
+        + '&impact=1';
+
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            btn.textContent = '🔍 开始对比';
+            if (data.success) {
+                showStatus('✅ 扫描完成！<a href="' + data.report_url + '" target="_blank">📄 打开新报告</a>', 'success');
+            } else {
+                showStatus('❌ 扫描失败: ' + data.error, 'error');
+            }
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            btn.textContent = '🔍 开始对比';
+            showStatus('❌ 请求失败: ' + err.message, 'error');
+        });
+}
+
+function showStatus(msg, type) {
+    var el = document.getElementById('scan-status');
+    el.className = 'status-msg ' + (type || 'info');
+    el.innerHTML = msg;
+}
+
+// 页面加载时自动获取分支列表
+(function() {
+    var repo = document.getElementById('scan-repo').value.trim();
+    if (repo) loadBranches();
+})();
+</script>
+
+<script>
+// 回到顶部
+window.addEventListener('scroll', function() {
+    document.getElementById('backTop').classList.toggle('visible', window.scrollY > 500);
+});
+document.getElementById('backTop').addEventListener('click', function(e) {
+    e.preventDefault();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+</script>
+</body>
+</html>

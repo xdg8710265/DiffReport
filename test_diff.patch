@@ -1,0 +1,10 @@
+diff --git a/.gitignore b/.gitignore
+index e75b24da..7fadc48a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -34,3 +34,5 @@ jrebel-*.jar
+ rebel.xml
+ 
+ .gradle/
++
++

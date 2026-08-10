@@ -1,0 +1,77 @@
+diff --git a/src/main/java/com/zt/oehr/comm/configurer/CurrentEmpNoHolder.java b/src/main/java/com/zt/oehr/comm/configurer/CurrentEmpNoHolder.java
+index a0385bcb..889a638a 100644
+--- a/src/main/java/com/zt/oehr/comm/configurer/CurrentEmpNoHolder.java
++++ b/src/main/java/com/zt/oehr/comm/configurer/CurrentEmpNoHolder.java
+@@ -1,36 +1,36 @@
+-package com.zt.oehr.comm.configurer;
+-
+-/**
+- * @author chenke
+- * @date 2023年08月07日 17:23
+- */
+-public class CurrentEmpNoHolder {
+-    private static final ThreadLocal<String> currentEmpNo = new ThreadLocal<>();
+-
+-    private static final ThreadLocal<String> currentZtToken = new ThreadLocal<>();
+-
+-    public CurrentEmpNoHolder() {
+-    }
+-
+-    public static String getCurrentEmpNo() {
+-        return currentEmpNo.get();
+-    }
+-
+-    public static void setCurrentEmpNo(String currentEmpNo) {
+-        CurrentEmpNoHolder.currentEmpNo.set(currentEmpNo);
+-    }
+-
+-    public static String getCurrentZtToken() {
+-        return currentZtToken.get();
+-    }
+-
+-    public static void setCurrentZtToken(String currentZtToken) {
+-        CurrentEmpNoHolder.currentZtToken.set(currentZtToken);
+-    }
+-
+-    public static void clear() {
+-        currentEmpNo.remove();
+-        currentZtToken.remove();
+-    }
+-
+-}
++//package com.zt.oehr.comm.configurer;
++//
++///**
++// * @author chenke
++// * @date 2023年08月07日 17:23
++// */
++//public class CurrentEmpNoHolder {
++//    private static final ThreadLocal<String> currentEmpNo = new ThreadLocal<>();
++//
++//    private static final ThreadLocal<String> currentZtToken = new ThreadLocal<>();
++//
++//    public CurrentEmpNoHolder() {
++//    }
++//
++//    public static String getCurrentEmpNo() {
++//        return currentEmpNo.get();
++//    }
++//
++//    public static void setCurrentEmpNo(String currentEmpNo) {
++//        CurrentEmpNoHolder.currentEmpNo.set(currentEmpNo);
++//    }
++//
++//    public static String getCurrentZtToken() {
++//        return currentZtToken.get();
++//    }
++//
++//    public static void setCurrentZtToken(String currentZtToken) {
++//        CurrentEmpNoHolder.currentZtToken.set(currentZtToken);
++//    }
++//
++//    public static void clear() {
++//        currentEmpNo.remove();
++//        currentZtToken.remove();
++//    }
++//
++//}
