@@ -156,7 +156,10 @@ def run_scan(repo_path: str, old_ref: str, new_ref: str,
         output_dir=output_dir,
     )
 
-    # ── 步骤 7: 清理 ──
+    # ── 步骤 7: 清理旧报告（保留最新 10 条） ──
+    _cleanup_old_reports(output_dir, keep=10)
+
+    # ── 步骤 8: 清理临时仓库 ──
     if not keep_temp:
         git_op.cleanup()
     else:
@@ -164,6 +167,21 @@ def run_scan(repo_path: str, old_ref: str, new_ref: str,
             print(f"📁 临时仓库已保留: {git_op._temp_dir}")
 
     return output_path
+
+
+def _cleanup_old_reports(output_dir: str, keep: int = 10):
+    """保留最新 N 份报告，删除更早的"""
+    import glob
+    pattern = os.path.join(output_dir, "diff_report_*.html")
+    files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    if len(files) <= keep:
+        return
+    for old_file in files[keep:]:
+        try:
+            os.remove(old_file)
+            print(f"🗑️  已清理旧报告: {os.path.basename(old_file)}")
+        except OSError as e:
+            print(f"⚠️ 清理失败: {old_file} — {e}")
 
 
 def _resolve_config() -> ScanConfig:

@@ -11,6 +11,9 @@ reports/*.html
 # Config with local paths
 scan_config.json
 
+# Runtime scan history
+scan_history.json
+
 # IDE
 .vscode/
 .idea/

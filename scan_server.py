@@ -19,6 +19,8 @@
 import os
 import sys
 import json
+import re
+import subprocess
 import urllib.parse
 import threading
 import uuid
@@ -31,8 +33,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scanner.git_ops import GitOperator
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scan_config.json")
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scan_history.json")
 
-# ── 扫描任务追踪 ──
+# lark-cli 路径（服务器进程 PATH 可能不包含 npm 全局目录）
+_LARK_CLI = os.path.expandvars(r"%APPDATA%\npm\lark-cli.cmd")
+if not os.path.exists(_LARK_CLI):
+    _LARK_CLI = "lark-cli"  # fallback
 _scan_tasks: dict = {}
 _tasks_lock = threading.Lock()
 
@@ -62,6 +68,44 @@ def load_config() -> dict:
 def save_config(cfg: dict):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def load_scan_history() -> list:
+    """加载扫描历史记录（最新在前）"""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def save_scan_history(history: list):
+    """保存扫描历史记录（最多保留 50 条）"""
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history[:50], f, ensure_ascii=False, indent=2)
+
+
+def add_scan_record(repo_name: str, repo_path: str, old_ref: str, new_ref: str,
+                    report_url: str, report_file: str, files_changed: int = 0,
+                    insertions: int = 0, deletions: int = 0):
+    """新增一条扫描记录"""
+    history = load_scan_history()
+    record = {
+        "repo_name": repo_name,
+        "repo_path": repo_path,
+        "old_ref": old_ref,
+        "new_ref": new_ref,
+        "report_url": report_url,
+        "report_file": os.path.basename(report_file) if report_file else "",
+        "files_changed": files_changed,
+        "insertions": insertions,
+        "deletions": deletions,
+        "generated_at": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    history.insert(0, record)
+    save_scan_history(history)
 
 
 def _is_git_repo(path: str) -> bool:
@@ -142,10 +186,20 @@ def run_scan_async(task_id: str, repo: str, old: str, new: str, impact: bool, po
             context_lines=-1 if full_context else 10,
         )
         filename = os.path.basename(output_path)
+        report_url = f"http://localhost:{port}/reports/{filename}"
         _update_task(task_id, "done",
-                     report_url=f"http://localhost:{port}/reports/{filename}",
+                     report_url=report_url,
                      report_file=output_path,
                      message=f"扫描完成: {filename}")
+        # 记录对比历史
+        add_scan_record(
+            repo_name=os.path.basename(repo.rstrip("/\\")),
+            repo_path=repo,
+            old_ref=old,
+            new_ref=new,
+            report_url=report_url,
+            report_file=output_path,
+        )
     except Exception as e:
         _update_task(task_id, "error", message=str(e))
 
@@ -160,308 +214,22 @@ def _update_task(task_id: str, status: str, **kwargs):
 
 # ── HTML 页面 ──
 
-ROOT_HTML = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>代码对比扫描</title>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; color: #24292e; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-.container { max-width: 700px; width: 100%; margin: 40px 20px; }
-.header { text-align: center; margin-bottom: 30px; }
-.header h1 { font-size: 28px; color: #24292e; margin-bottom: 6px; }
-.header p { color: #586069; font-size: 14px; }
-.card { background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); padding: 32px; }
-.form-group { margin-bottom: 20px; }
-.form-group label { display: block; font-size: 13px; font-weight: 600; color: #586069; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-.form-group input, .form-group select { width: 100%; padding: 12px 14px; border: 2px solid #e1e4e8; border-radius: 8px; font-size: 15px; font-family: 'SFMono-Regular', Consolas, monospace; background: #fafbfc; transition: border-color 0.2s, box-shadow 0.2s; }
-.form-group input:focus, .form-group select:focus { outline: none; border-color: #0366d6; box-shadow: 0 0 0 3px rgba(3,102,214,.12); background: #fff; }
-.form-group .hint { font-size: 12px; color: #959da5; margin-top: 4px; }
-.row { display: flex; gap: 12px; }
-.row .form-group { flex: 1; }
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 28px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
-.btn-primary { background: linear-gradient(135deg, #0366d6, #0256b9); color: #fff; width: 100%; }
-.btn-primary:hover { background: linear-gradient(135deg, #0256b9, #0146a0); }
-.btn-primary:disabled { background: #959da5; cursor: not-allowed; }
-.btn-sm { padding: 10px 14px; font-size: 13px; border: 2px solid #e1e4e8; background: #f6f8fa; border-radius: 8px; cursor: pointer; }
-.btn-sm:hover { background: #e1e4e8; }
-.status { margin-top: 16px; padding: 12px 16px; border-radius: 8px; font-size: 14px; display: none; }
-.status.info { display: block; background: #f0f7ff; color: #0366d6; border: 1px solid #c8e1ff; }
-.status.success { display: block; background: #dcffe4; color: #28a745; border: 1px solid #bef5cb; }
-.status.error { display: block; background: #ffeef0; color: #cb2431; border: 1px solid #ffdce0; }
-.status a { color: inherit; font-weight: 600; }
-.progress-bar { margin-top: 12px; height: 6px; background: #e1e4e8; border-radius: 3px; overflow: hidden; }
-.progress-bar .fill { height: 100%; background: linear-gradient(90deg, #0366d6, #28a745); border-radius: 3px; animation: progress 2s ease-in-out infinite; width: 30%; }
-@keyframes progress { 0% { width: 10%; } 50% { width: 70%; } 100% { width: 10%; } }
-.reports-section { margin-top: 24px; }
-.reports-section h3 { font-size: 16px; color: #586069; margin-bottom: 12px; }
-.report-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #f6f8fa; border-radius: 8px; margin-bottom: 8px; font-size: 14px; transition: background 0.15s; }
-.report-item:hover { background: #e8ecf0; }
-.report-item a { color: #0366d6; text-decoration: none; font-weight: 500; flex: 1; word-break: break-all; }
-.report-item .time { color: #959da5; font-size: 12px; white-space: nowrap; }
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="header">
-    <h1>🚀 代码对比扫描</h1>
-    <p>选择对比分支，一键生成差异报告</p>
-  </div>
+DASHBOARD_TEMPLATE = os.path.join(os.path.dirname(__file__), "templates", "dashboard.html")
 
-  <div class="card">
-    <div class="form-group">
-      <label>📦 仓库</label>
-      <div style="display:flex;gap:8px;">
-        <select id="repo-select" style="flex:1;" onchange="onRepoChange()">
-          <option value="">⏳ 发现仓库中...</option>
-        </select>
-        <button class="btn-sm" onclick="discoverRepos()" title="重新扫描仓库">🔍</button>
-      </div>
-      <input type="text" id="repo" placeholder="或手动输入仓库路径" style="margin-top:8px;display:none;">
-      <div class="hint">下拉选择已发现的仓库，或手动输入路径</div>
-    </div>
 
-    <div class="row">
-      <div class="form-group">
-        <label>🔖 基线版本 (旧)</label>
-        <input type="text" id="old-ref" value="master" placeholder="master">
-      </div>
-      <div class="form-group">
-        <label>🆕 对比版本 (新)</label>
-        <div style="display:flex;gap:8px;">
-          <select id="new-ref" style="flex:1;">
-            <option value="">— 选择分支 —</option>
-          </select>
-          <button class="btn-sm" onclick="loadBranches()" title="刷新分支列表">🔄</button>
-        </div>
-      </div>
-    </div>
+def _load_dashboard():
+    """加载仪表盘 HTML（带缓存）"""
+    global _dashboard_cache, _dashboard_mtime
+    mtime = os.path.getmtime(DASHBOARD_TEMPLATE)
+    if not _dashboard_cache or mtime != _dashboard_mtime:
+        with open(DASHBOARD_TEMPLATE, "r", encoding="utf-8") as f:
+            _dashboard_cache = f.read()
+        _dashboard_mtime = mtime
+    return _dashboard_cache
 
-    <button class="btn btn-primary" id="scan-btn" onclick="startScan()">
-      <span id="btn-text">🔍 开始对比（快速模式，约 10-30 秒）</span>
-      <span id="btn-wait" style="display:none;">⏳ 等待扫描完成...</span>
-    </button>
 
-    <div style="display:flex;gap:24px;margin-top:16px;font-size:13px;color:#586069;">
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-        <input type="checkbox" id="full-context" onchange="updateBtnText()">
-        完整文件上下文（较慢，约 1-3 分钟）
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-        <input type="checkbox" id="enable-impact" checked>
-        Java 影响分析
-      </label>
-    </div>
-
-    <div id="status" class="status"></div>
-    <div id="progress" class="progress-bar" style="display:none;"><div class="fill"></div></div>
-  </div>
-
-  <div class="reports-section" id="reports-section" style="display:none;">
-    <h3>📄 历史报告</h3>
-    <div id="report-list"></div>
-  </div>
-</div>
-
-<script>
-var POLL_INTERVAL = 3000;
-
-function getRepoPath() {
-  var sel = document.getElementById('repo-select');
-  var input = document.getElementById('repo');
-  // 优先取手动输入，为空时取下拉选中值
-  if (input.style.display !== 'none' && input.value.trim()) {
-    return input.value.trim();
-  }
-  return sel.value || '';
-}
-
-function onRepoChange() {
-  var sel = document.getElementById('repo-select');
-  var input = document.getElementById('repo');
-  if (sel.value === '__manual__') {
-    input.style.display = 'block';
-    input.focus();
-    input.value = '';
-    sel.value = '__manual__';
-  } else if (sel.value && sel.value !== '__manual__') {
-    input.style.display = 'none';
-    input.value = '';
-    loadBranches();
-  }
-}
-
-function discoverRepos() {
-  var sel = document.getElementById('repo-select');
-  sel.innerHTML = '<option value="">⏳ 扫描仓库中...</option>';
-
-  fetch('/repos')
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      var repos = data.repos || [];
-      sel.innerHTML = '';
-      if (repos.length === 0) {
-        sel.innerHTML = '<option value="">— 未发现仓库 —</option>';
-      } else {
-        repos.forEach(function(r) {
-          var label = r.name + '  (' + r.path + ')' + (r.source === 'discovered' ? ' 🔍' : '');
-          sel.innerHTML += '<option value="' + r.path + '">' + label + '</option>';
-        });
-      }
-      sel.innerHTML += '<option value="__manual__">✏️ 手动输入路径...</option>';
-      // 自动选中默认仓库
-      if (data.default_path) sel.value = data.default_path;
-      if (sel.value) loadBranches();
-    })
-    .catch(function(err) {
-      sel.innerHTML = '<option value="">— 加载失败 —</option>';
-    });
-}
-
-function showStatus(msg, type) {
-  var el = document.getElementById('status');
-  el.className = 'status ' + (type || 'info');
-  el.innerHTML = msg;
-}
-
-function setScanning(scanning) {
-  document.getElementById('btn-text').style.display = scanning ? 'none' : 'inline';
-  document.getElementById('btn-wait').style.display = scanning ? 'inline' : 'none';
-  document.getElementById('scan-btn').disabled = scanning;
-  document.getElementById('progress').style.display = scanning ? 'block' : 'none';
-}
-
-function loadBranches() {
-  var repo = getRepoPath();
-  if (!repo) { showStatus('请先选择或输入仓库路径', 'error'); return; }
-
-  var sel = document.getElementById('new-ref');
-  sel.innerHTML = '<option value="">⏳ 加载中...</option>';
-  showStatus('正在获取分支列表...', 'info');
-
-  fetch('/branches?repo=' + encodeURIComponent(repo))
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.success) {
-        sel.innerHTML = '<option value="">— 选择分支 (' + data.branches.length + ' 个) —</option>';
-        (data.branches || []).forEach(function(b) {
-          sel.innerHTML += '<option value="' + b + '">' + b + '</option>';
-        });
-        showStatus('✅ 已加载 ' + data.branches.length + ' 个分支', 'success');
-        // 后台保存仓库路径
-        fetch('/config', { method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'repo=' + encodeURIComponent(repo)
-        }).catch(function(){});
-      } else {
-        sel.innerHTML = '<option value="">— 加载失败 —</option>';
-        showStatus('❌ ' + data.error, 'error');
-      }
-    })
-    .catch(function(err) {
-      sel.innerHTML = '<option value="">— 网络错误 —</option>';
-      showStatus('❌ 无法连接: ' + err.message, 'error');
-    });
-}
-
-function updateBtnText() {
-  var full = document.getElementById('full-context').checked;
-  var btn = document.getElementById('btn-text');
-  btn.textContent = full ? '🔍 开始对比（完整模式，约 1-3 分钟）' : '🔍 开始对比（快速模式，约 10-30 秒）';
-}
-
-function startScan() {
-  var repo = getRepoPath();
-  var old = document.getElementById('old-ref').value.trim() || 'master';
-  var newRef = document.getElementById('new-ref').value;
-  var full = document.getElementById('full-context').checked ? '1' : '0';
-  var impact = document.getElementById('enable-impact').checked ? '1' : '0';
-
-  if (!repo || !newRef) {
-    showStatus('请填写仓库路径并选择对比分支', 'error');
-    return;
-  }
-
-  setScanning(true);
-  showStatus('正在启动扫描...', 'info');
-
-  fetch('/scan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'repo=' + encodeURIComponent(repo)
-      + '&old=' + encodeURIComponent(old)
-      + '&new=' + encodeURIComponent(newRef)
-      + '&impact=' + impact
-      + '&full=' + full
-  })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.task_id) {
-        showStatus('⏳ 扫描进行中，请稍候（约 1-3 分钟）...', 'info');
-        pollStatus(data.task_id);
-      } else {
-        setScanning(false);
-        showStatus('❌ 启动失败: ' + (data.error || '未知错误'), 'error');
-      }
-    })
-    .catch(function(err) {
-      setScanning(false);
-      showStatus('❌ 请求失败: ' + err.message, 'error');
-    });
-}
-
-function pollStatus(taskId) {
-  fetch('/scan-status?task_id=' + encodeURIComponent(taskId))
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.status === 'done') {
-        setScanning(false);
-        showStatus('✅ 扫描完成！<a href="' + data.report_url + '" target="_blank">📄 打开报告</a>', 'success');
-        loadReports();
-      } else if (data.status === 'error') {
-        setScanning(false);
-        showStatus('❌ 扫描失败: ' + data.message, 'error');
-      } else {
-        // 仍在运行，继续轮询
-        if (data.message) showStatus('⏳ ' + data.message, 'info');
-        setTimeout(function() { pollStatus(taskId); }, POLL_INTERVAL);
-      }
-    })
-    .catch(function(err) {
-      // 网络错误，继续重试
-      setTimeout(function() { pollStatus(taskId); }, POLL_INTERVAL);
-    });
-}
-
-function loadReports() {
-  fetch('/reports-list')
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.reports && data.reports.length > 0) {
-        document.getElementById('reports-section').style.display = 'block';
-        var html = '';
-        data.reports.forEach(function(r) {
-          html += '<div class="report-item">'
-            + '<span>📊</span>'
-            + '<a href="/reports/' + r.filename + '" target="_blank">' + r.filename + '</a>'
-            + '<span class="time">' + r.time + '</span>'
-            + '</div>';
-        });
-        document.getElementById('report-list').innerHTML = html;
-      }
-    })
-    .catch(function(){});
-}
-
-(function() {
-  discoverRepos();
-  loadReports();
-})();
-</script>
-</body>
-</html>"""
+_dashboard_cache = ""
+_dashboard_mtime = 0.0
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -522,6 +290,16 @@ class ScanHandler(BaseHTTPRequestHandler):
         cl = int(self.headers.get("Content-Length", 0))
         return dict(urllib.parse.parse_qsl(self.rfile.read(cl).decode("utf-8")))
 
+    def _read_json_body(self):
+        cl = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(cl)
+        # 尝试 UTF-8，失败则尝试 GBK
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", errors="replace")
+        return json.loads(text)
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         if path == "/":
@@ -538,21 +316,35 @@ class ScanHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok", "message": "扫描服务运行中"})
         elif path == "/reports-list":
             self._handle_reports_list()
+        elif path == "/scan-history":
+            self._handle_scan_history()
+        elif path == "/scan":
+            # GET /scan?repo=...&old=...&new=...&impact=1
+            params = self._parse_params()
+            self._start_scan(params)
         elif path.startswith("/reports/"):
             self._serve_report(path)
         else:
             self._send_json({"error": "未知路径: " + path}, 404)
 
     def do_POST(self):
-        path = urllib.parse.urlparse(self.path).path
-        if path == "/scan":
-            params = self._read_body_params()
-            self._start_scan(params)
-        elif path == "/config":
-            params = self._read_body_params()
-            self._handle_config_set(params)
-        else:
-            self._send_json({"error": "不支持的方法"}, 405)
+        try:
+            path = urllib.parse.urlparse(self.path).path
+            if path == "/scan":
+                params = self._read_body_params()
+                self._start_scan(params)
+            elif path == "/config":
+                params = self._read_body_params()
+                self._handle_config_set(params)
+            elif path == "/send-to-lark":
+                body = self._read_json_body()
+                self._handle_send_to_lark(body)
+            else:
+                self._send_json({"error": "不支持的方法"}, 405)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._send_json({"success": False, "error": str(e)}, 500)
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -563,7 +355,7 @@ class ScanHandler(BaseHTTPRequestHandler):
 
     # ── 根页面 ──
     def _serve_root(self):
-        html = ROOT_HTML
+        html = _load_dashboard()
         self._send_html(html)
 
     # ── 仓库列表 ──
@@ -616,22 +408,27 @@ class ScanHandler(BaseHTTPRequestHandler):
                     })
         self._send_json({"reports": reports[:20]})
 
+    def _handle_scan_history(self):
+        """返回最近 N 条扫描历史记录"""
+        history = load_scan_history()
+        self._send_json({"history": history[:10]})
+
     # ── 扫描（异步） ──
     def _start_scan(self, params):
         repo = params.get("repo", "")
         old = params.get("old", "master")
         new = params.get("new", "")
         impact = params.get("impact", "1") not in ("0", "false", "no")
-        full_context = params.get("full", "0") not in ("0", "false", "no")
+        full_context = params.get("full", "1") not in ("0", "false", "no")
 
         if not repo or not new:
             self._send_json({"success": False, "error": "缺少参数: repo 和 new 为必填项"}, 400)
             return
 
-        # 分支名补全 origin/
+        # 分支名补全 origin/（fetch 后 origin/* 是最新的远程代码）
         if new and "/" not in new:
             new = "origin/" + new
-        if old and "/" not in old and old != "master":
+        if old and "/" not in old:
             old = "origin/" + old
 
         task_id = str(uuid.uuid4())
@@ -672,6 +469,258 @@ class ScanHandler(BaseHTTPRequestHandler):
             self._send_json({"success": True, "branches": branches})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
+
+    # ── 发送到飞书 ──
+    def _handle_send_to_lark(self, body: dict):
+        recipients_raw = body.get("recipients", "")
+        summary = body.get("summary", {})
+        report_url = body.get("report_url", "")
+        report_file = body.get("report_file", "")
+
+        if not recipients_raw:
+            self._send_json({"success": False, "error": "请填写接收人"}, 400)
+            return
+
+        # 解析接收人列表（逗号/分号/换行分隔）
+        recipients = re.split(r"[,;，；\n]+", recipients_raw.strip())
+        recipients = [r.strip() for r in recipients if r.strip()]
+
+        # 先解析所有用户 ID
+        user_map = {}  # recipient -> open_id
+        for recipient in recipients:
+            try:
+                user_id = _resolve_user_id(recipient)
+                if user_id:
+                    user_map[recipient] = user_id
+                else:
+                    user_map[recipient] = None
+            except Exception as e:
+                user_map[recipient] = None
+
+        # 获取服务器端口（用于构造截图 URL）
+        port = self.server.server_address[1]
+
+        # 截取报告截图并上传到飞书（只做一次）
+        image_key = ""
+        screenshot_path = ""
+        try:
+            screenshot_path = _capture_report_screenshot(report_url)
+            image_key = _upload_image_to_lark(screenshot_path)
+        except Exception as e:
+            print(f"⚠️ 截图/上传失败: {e}")
+        finally:
+            # 清理临时截图
+            if screenshot_path and os.path.exists(screenshot_path):
+                try:
+                    os.remove(screenshot_path)
+                except OSError:
+                    pass
+
+        # 发送消息
+        results = []
+        for recipient in recipients:
+            user_id = user_map.get(recipient)
+            if not user_id:
+                results.append({"recipient": recipient, "status": "error", "message": "未找到该用户"})
+                continue
+            try:
+                _send_report_message(user_id, summary, report_url, report_file,
+                                     image_key=image_key)
+                results.append({"recipient": recipient, "status": "ok", "message": "已发送"})
+            except Exception as e:
+                results.append({"recipient": recipient, "status": "error", "message": str(e)[:200]})
+
+        ok_count = sum(1 for r in results if r["status"] == "ok")
+        self._send_json({
+            "success": ok_count > 0,
+            "sent": ok_count,
+            "total": len(results),
+            "results": results,
+        })
+
+
+def _resolve_user_id(recipient: str) -> str:
+    """解析接收人：如果是 open_id 直接返回，否则通过飞书搜索"""
+    # 已经是 open_id
+    if re.match(r"^ou_[a-z0-9]+$", recipient):
+        return recipient
+
+    # 通过 lark-cli 搜索用户
+    env = os.environ.copy()
+    env["LARKSUITE_CLI_NO_UPDATE_NOTIFIER"] = "1"
+    env["LARKSUITE_CLI_NO_SKILLS_NOTIFIER"] = "1"
+    result = subprocess.run(
+        [_LARK_CLI, "contact", "+search-user", "--query", recipient, "--as", "user", "--json"],
+        capture_output=True, text=True, timeout=15, env=env
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"搜索用户失败: {result.stderr[:200]}")
+    data = json.loads(result.stdout)
+    # lark-cli contact +search-user 返回 {"data": {"users": [...]}}
+    users = data.get("data", {}).get("users", [])
+    if not users:
+        return ""  # 未找到
+    return users[0].get("open_id", "")
+
+
+def _resolve_report_path(report_file: str) -> str:
+    """将前端传来的 report_file（如 /reports/xxx.html）解析为本地绝对路径"""
+    safe_path = os.path.normpath(report_file.lstrip("/"))
+    file_path = os.path.join(os.path.dirname(__file__), safe_path)
+    if not file_path.startswith(os.path.dirname(__file__)):
+        raise RuntimeError("非法文件路径")
+    if not os.path.exists(file_path):
+        raise RuntimeError(f"报告文件不存在: {report_file}")
+    return file_path
+
+
+def _capture_report_screenshot(report_url: str) -> str:
+    """用 Playwright 截取报告页面截图，返回截图临时文件路径"""
+    import tempfile
+    from playwright.sync_api import sync_playwright
+
+    screenshot_path = os.path.join(tempfile.gettempdir(),
+                                   f"report_screenshot_{os.urandom(4).hex()}.png")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        try:
+            page.goto(report_url, wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(3000)  # 等待 diff2html 样式和文件列表渲染
+            # 只截取报告概览区域（不包含可折叠的 diff 详情）
+            page.screenshot(path=screenshot_path, full_page=True)
+        finally:
+            browser.close()
+
+    return screenshot_path
+
+
+def _upload_image_to_lark(image_path: str) -> str:
+    """上传图片到飞书，返回 image_key（img_v3_xxx）"""
+    image_dir = os.path.dirname(os.path.abspath(image_path))
+    image_name = os.path.basename(image_path)
+    env = os.environ.copy()
+    env["LARKSUITE_CLI_NO_UPDATE_NOTIFIER"] = "1"
+    env["LARKSUITE_CLI_NO_SKILLS_NOTIFIER"] = "1"
+    result = subprocess.run(
+        [_LARK_CLI, "im", "images", "create",
+         "--data", '{"image_type":"message"}',
+         "--file", image_name,
+         "--as", "user", "--json"],
+        capture_output=True, text=True, timeout=60, env=env,
+        cwd=image_dir
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"上传图片失败: {result.stderr[:300]}")
+    data = json.loads(result.stdout)
+    image_key = data.get("data", {}).get("image_key", "")
+    if not image_key:
+        raise RuntimeError(f"上传图片返回缺少 image_key: {json.dumps(data, ensure_ascii=False)[:300]}")
+    return image_key
+
+
+def _upload_to_drive(file_path: str) -> dict:
+    """上传 HTML 报告到飞书云空间，返回 {"file_token": ..., "url": ...}"""
+    env = os.environ.copy()
+    env["LARKSUITE_CLI_NO_UPDATE_NOTIFIER"] = "1"
+    env["LARKSUITE_CLI_NO_SKILLS_NOTIFIER"] = "1"
+    result = subprocess.run(
+        [_LARK_CLI, "drive", "+upload", "--file", file_path, "--as", "user", "--json"],
+        capture_output=True, text=True, timeout=180, env=env
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"上传到云空间失败: {result.stderr[:300]}")
+    data = json.loads(result.stdout)
+    inner = data.get("data", {})
+    file_token = inner.get("file_token", "")
+    url = inner.get("url", "")
+    if not file_token:
+        raise RuntimeError(f"上传返回缺少 file_token: {json.dumps(data, ensure_ascii=False)[:500]}")
+    return {"file_token": file_token, "url": url, "name": inner.get("name", "")}
+
+
+def _share_file_to_users(file_token: str, user_ids: list) -> None:
+    """将 Drive 文件分享给指定用户（view 权限），批量一次最多 10 人"""
+    if not user_ids:
+        return
+    env = os.environ.copy()
+    env["LARKSUITE_CLI_NO_UPDATE_NOTIFIER"] = "1"
+    env["LARKSUITE_CLI_NO_SKILLS_NOTIFIER"] = "1"
+    batch_size = 10
+    for i in range(0, len(user_ids), batch_size):
+        batch = user_ids[i:i + batch_size]
+        member_ids = ",".join(batch)
+        result = subprocess.run(
+            [_LARK_CLI, "drive", "+member-add",
+             "--token", file_token,
+             "--type", "file",
+             "--member-id", member_ids,
+             "--member-type", "openid",
+             "--perm", "view",
+             "--as", "user", "--json", "--yes"],
+            capture_output=True, text=True, timeout=30, env=env
+        )
+        if result.returncode != 0:
+            print(f"⚠️ 分享文件给部分用户失败: {result.stderr[:200]}")
+
+
+def _send_report_message(user_id: str, summary: dict, report_url: str, report_file: str,
+                          image_key: str = ""):
+    """通过飞书发送报告摘要消息（优先发送截图，附带详情链接）"""
+    repo_name = summary.get("repo_name", "unknown")
+    old_ref = summary.get("old_ref", "")
+    new_ref = summary.get("new_ref", "")
+    generated_at = summary.get("generated_at", "")
+    files_changed = summary.get("files_changed", 0)
+    insertions = summary.get("insertions", 0)
+    deletions = summary.get("deletions", 0)
+    net = insertions - deletions
+    report_name = os.path.basename(report_file) if report_file else "diff_report.html"
+
+    # 影响分析摘要
+    impact_lines = ""
+    if summary.get("impact"):
+        imp = summary["impact"]
+        if imp.get("test_suggestions"):
+            impact_lines = "\n📋 **测试建议**\n"
+            for s in imp["test_suggestions"][:5]:
+                impact_lines += f"- {s}\n"
+
+    # 如果有截图，放在消息顶部
+    if image_key:
+        markdown = f"![报告截图]({image_key})\n\n"
+    else:
+        markdown = ""
+
+    markdown += (
+        f"📊 **代码对比报告**\n\n"
+        f"**仓库**: {repo_name}\n"
+        f"**对比**: `{old_ref}` → `{new_ref}`\n"
+        f"**时间**: {generated_at}\n\n"
+        f"📈 **变更概览**\n"
+        f"- 变更文件: {files_changed} 个\n"
+        f"- 新增: +{insertions} 行\n"
+        f"- 删除: -{deletions} 行\n"
+        f"- 净变化: {'+' if net >= 0 else ''}{net} 行\n"
+        f"{impact_lines}"
+        f"\n📄 报告文件: {report_name}\n"
+    )
+    if report_url:
+        markdown += f"🔗 [查看详情]({report_url})"
+
+    env = os.environ.copy()
+    env["LARKSUITE_CLI_NO_UPDATE_NOTIFIER"] = "1"
+    env["LARKSUITE_CLI_NO_SKILLS_NOTIFIER"] = "1"
+    result = subprocess.run(
+        [_LARK_CLI, "im", "+messages-send",
+         "--user-id", user_id,
+         "--markdown", markdown,
+         "--as", "user", "--json"],
+        capture_output=True, text=True, timeout=30, env=env
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"发送失败: {result.stderr[:300]}")
 
 
 def main():
