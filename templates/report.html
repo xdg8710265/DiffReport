@@ -489,7 +489,7 @@ function collapseAllFolders() {
 
 <script>
 // 服务器地址（飞书发送等功能使用）
-var SCAN_SERVER = 'http://localhost:8899';
+var SCAN_SERVER = window.location.origin;  // 自动适配 localhost / 局域网 IP 访问
 
 function sendToLark() {
     var recipients = document.getElementById('lark-recipients').value.trim();

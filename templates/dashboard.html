@@ -260,6 +260,9 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 <div class="topbar">
   <div class="platform-name">HRAS测试部代码对比平台</div>
   <div class="topbar-right">
+    <span style="color:#4E5969;">局域网访问:</span>
+    <a id="lan-url" href="#" target="_blank" style="color:#0E66FB;text-decoration:none;">检测中...</a>
+    <span style="margin-left:8px;">|</span>
     <span class="status-dot" id="server-dot"></span>
     <span id="server-text">检测服务中...</span>
   </div>
@@ -321,7 +324,10 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
           </div>
           <div class="form-group">
             <label>基线版本</label>
-            <input type="text" id="old-ref" value="master" placeholder="master">
+            <select id="old-ref" style="min-width:140px;" onchange="onBaseChange()">
+              <option value="master" selected>master</option>
+            </select>
+            <input type="text" id="old-ref-manual" placeholder="输入分支名/tag/commit" style="margin-top:8px;display:none;min-width:140px;">
           </div>
           <div class="form-group">
             <label>对比版本</label>
@@ -384,13 +390,19 @@ function switchView(view) {
 function checkServerStatus() {
   fetch('/status')
     .then(function(r) { return r.json(); })
-    .then(function() {
+    .then(function(data) {
       document.getElementById('server-dot').style.background = '#52C41A';
       document.getElementById('server-text').textContent = '服务运行中';
+      var lanEl = document.getElementById('lan-url');
+      if (data.lan_url) {
+        lanEl.textContent = data.lan_url;
+        lanEl.href = data.lan_url;
+      }
     })
     .catch(function() {
       document.getElementById('server-dot').style.background = '#FF4D4F';
       document.getElementById('server-text').textContent = '服务不可用';
+      document.getElementById('lan-url').textContent = '不可用';
     });
 }
 
@@ -411,6 +423,16 @@ function onRepoChange() {
   } else if (sel.value && sel.value !== '__manual__') {
     input.style.display = 'none'; input.value = '';
     loadBranches();
+  }
+}
+
+function onBaseChange() {
+  var sel = document.getElementById('old-ref');
+  var input = document.getElementById('old-ref-manual');
+  if (sel.value === '__manual__') {
+    input.style.display = 'block'; input.focus(); input.value = '';
+  } else {
+    input.style.display = 'none'; input.value = '';
   }
 }
 
@@ -445,41 +467,59 @@ function showStatus(msg, type) {
 function loadBranches() {
   var repo = getRepoPath();
   if (!repo) { showStatus('请先选择或输入仓库路径', 'error'); return; }
-  var sel = document.getElementById('new-ref');
-  sel.innerHTML = '<option value="">加载中...</option>';
+  var baseSel = document.getElementById('old-ref');
+  var newSel = document.getElementById('new-ref');
+  var prevBase = baseSel.value || 'master';
+  var prevNew = newSel.value || '';
+  baseSel.innerHTML = '<option value="">加载中...</option>';
+  newSel.innerHTML = '<option value="">加载中...</option>';
   fetch('/branches?repo=' + encodeURIComponent(repo))
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.success) {
-        sel.innerHTML = '<option value="">— 选择分支 (' + data.branches.length + ' 个) —</option>';
-        data.branches.forEach(function(b) {
-          sel.innerHTML += '<option value="' + b + '">' + b + '</option>';
+        var branches = data.branches;
+        baseSel.innerHTML = '<option value="">— 选择基线分支 (' + branches.length + ' 个) —</option>';
+        newSel.innerHTML = '<option value="">— 选择对比分支 (' + branches.length + ' 个) —</option>';
+        branches.forEach(function(b) {
+          baseSel.innerHTML += '<option value="' + b + '">' + b + '</option>';
+          newSel.innerHTML += '<option value="' + b + '">' + b + '</option>';
         });
-        showStatus('已加载 ' + data.branches.length + ' 个分支', 'success');
+        baseSel.innerHTML += '<option value="__manual__">✏️ 手动输入...</option>';
+        newSel.innerHTML += '<option value="__manual__">✏️ 手动输入...</option>';
+        // 恢复之前选中的值
+        if (branches.indexOf(prevBase) >= 0) baseSel.value = prevBase;
+        else if (prevBase === 'master') baseSel.value = 'master';
+        if (branches.indexOf(prevNew) >= 0) newSel.value = prevNew;
+        showStatus('已加载 ' + branches.length + ' 个分支', 'success');
         fetch('/config', { method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: 'repo=' + encodeURIComponent(repo)
         }).catch(function(){});
       } else {
-        sel.innerHTML = '<option value="">— 加载失败 —</option>';
+        baseSel.innerHTML = '<option value="">— 加载失败 —</option>';
+        newSel.innerHTML = '<option value="">— 加载失败 —</option>';
         showStatus('❌ ' + data.error, 'error');
       }
     })
     .catch(function(err) {
-      sel.innerHTML = '<option value="">— 网络错误 —</option>';
+      baseSel.innerHTML = '<option value="">— 网络错误 —</option>';
+      newSel.innerHTML = '<option value="">— 网络错误 —</option>';
       showStatus('❌ 无法连接: ' + err.message, 'error');
     });
 }
 
 function startScan() {
   var repo = getRepoPath();
-  var old = document.getElementById('old-ref').value.trim() || 'master';
+  var baseSel = document.getElementById('old-ref');
+  var old = baseSel.value === '__manual__'
+    ? document.getElementById('old-ref-manual').value.trim()
+    : baseSel.value.trim();
   var newRef = document.getElementById('new-ref').value;
   var full = document.getElementById('full-context').checked ? '1' : '0';
   var impact = document.getElementById('enable-impact').checked ? '1' : '0';
 
-  if (!repo || !newRef) {
-    showStatus('请填写仓库路径并选择对比分支', 'error');
+  if (!repo || !old) {
+    showStatus('请填写仓库路径并选择基线版本', 'error');
     return;
   }
 

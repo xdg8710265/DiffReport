@@ -32,3 +32,7 @@ tmp/
 # Virtual env
 venv/
 .venv/
+
+# Server logs
+server.log
+bat_test.log

@@ -20,6 +20,7 @@ import os
 import sys
 import json
 import re
+import socket
 import subprocess
 import urllib.parse
 import threading
@@ -41,6 +42,42 @@ if not os.path.exists(_LARK_CLI):
     _LARK_CLI = "lark-cli"  # fallback
 _scan_tasks: dict = {}
 _tasks_lock = threading.Lock()
+
+
+def get_lan_ip() -> str:
+    """探测本机局域网 IP（优先 192.168.x / 10.x 网段，供同事通过局域网访问）"""
+    candidates = []
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in candidates:
+                candidates.append(ip)
+    except Exception:
+        pass
+    # 优先真实局域网网段
+    for ip in candidates:
+        if ip.startswith(("192.168.", "10.")):
+            return ip
+    for ip in candidates:
+        if ip.startswith("172."):
+            parts = ip.split(".")
+            if len(parts) == 4 and 16 <= int(parts[1]) <= 31:
+                return ip
+    # 兜底：连接外部地址探测默认出口 IP
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    return "localhost"
+
+
+LAN_IP = get_lan_ip()
 
 
 def load_config() -> dict:
@@ -186,7 +223,9 @@ def run_scan_async(task_id: str, repo: str, old: str, new: str, impact: bool, po
             context_lines=-1 if full_context else 10,
         )
         filename = os.path.basename(output_path)
-        report_url = f"http://localhost:{port}/reports/{filename}"
+        # 使用局域网 IP 生成链接，同事可通过局域网访问
+        host = LAN_IP if LAN_IP and LAN_IP != "localhost" else "localhost"
+        report_url = f"http://{host}:{port}/reports/{filename}"
         _update_task(task_id, "done",
                      report_url=report_url,
                      report_file=output_path,
@@ -313,7 +352,12 @@ class ScanHandler(BaseHTTPRequestHandler):
         elif path == "/config":
             self._handle_config_get()
         elif path == "/status":
-            self._send_json({"status": "ok", "message": "扫描服务运行中"})
+            port = self.server.server_address[1]
+            self._send_json({
+                "status": "ok",
+                "message": "扫描服务运行中",
+                "lan_url": f"http://{LAN_IP}:{port}",
+            })
         elif path == "/reports-list":
             self._handle_reports_list()
         elif path == "/scan-history":
@@ -437,7 +481,7 @@ class ScanHandler(BaseHTTPRequestHandler):
         with _tasks_lock:
             _scan_tasks[task_id] = {"status": "pending", "message": "排队中..."}
 
-        print(f"\n📥 扫描任务 {task_id[:8]}: {repo}  {old} → {new}  完整上下文={full_context}")
+        print(f"\n[SCAN] 扫描任务 {task_id[:8]}: {repo}  {old} -> {new}  完整上下文={full_context}")
 
         t = threading.Thread(target=run_scan_async,
                              args=(task_id, repo, old, new, impact, port, full_context),
@@ -507,7 +551,7 @@ class ScanHandler(BaseHTTPRequestHandler):
             screenshot_path = _capture_report_screenshot(report_url)
             image_key = _upload_image_to_lark(screenshot_path)
         except Exception as e:
-            print(f"⚠️ 截图/上传失败: {e}")
+            print(f"[WARN] 截图/上传失败: {e}")
         finally:
             # 清理临时截图
             if screenshot_path and os.path.exists(screenshot_path):
@@ -662,7 +706,7 @@ def _share_file_to_users(file_token: str, user_ids: list) -> None:
             capture_output=True, text=True, timeout=30, env=env
         )
         if result.returncode != 0:
-            print(f"⚠️ 分享文件给部分用户失败: {result.stderr[:200]}")
+            print(f"[WARN] 分享文件给部分用户失败: {result.stderr[:200]}")
 
 
 def _send_report_message(user_id: str, summary: dict, report_url: str, report_file: str,
@@ -724,6 +768,12 @@ def _send_report_message(user_id: str, summary: dict, report_url: str, report_fi
 
 
 def main():
+    # 计划任务/重定向日志时控制台为 GBK，emoji 打印会崩溃，统一转 UTF-8
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     import argparse
     parser = argparse.ArgumentParser(description="代码对比扫描 HTTP 服务")
     parser.add_argument("--port", type=int, default=8899)
@@ -740,7 +790,7 @@ def main():
         cfg["repos"] = repos
         cfg["default"] = name
         save_config(cfg)
-        print(f"📦 仓库已注册: {name} → {args.repo}")
+        print(f"[OK] 仓库已注册: {name} → {args.repo}")
 
     if args.scan_root:
         # 扫描指定根目录发现仓库并自动注册
@@ -751,7 +801,7 @@ def main():
         for d in discovered:
             if d["path"] not in existing_paths:
                 repos.append({"name": d["name"], "path": d["path"]})
-                print(f"🔍 发现新仓库: {d['name']} → {d['path']}")
+                print(f"Discovered repo: {d['name']} -> {d['path']}")
         cfg["repos"] = repos
         if not cfg.get("default") and repos:
             cfg["default"] = repos[0]["name"]
@@ -759,17 +809,17 @@ def main():
 
     repo_path = get_default_repo()
     server = ThreadingHTTPServer(("0.0.0.0", args.port), ScanHandler)
-    print(f"🚀 扫描服务已启动: http://localhost:{args.port}")
+    print(f"Scan server started: http://localhost:{args.port}")
     if repo_path:
-        print(f"📦 默认仓库: {repo_path}")
+        print(f"Default repo: {repo_path}")
     else:
-        print(f"📦 未检测到仓库，打开页面后会自动扫描 E:/ 下的 git 仓库")
+        print(f"No default repo; scanning E:/ for git repos on first visit")
     print()
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n👋 服务已停止")
+        print("Server stopped")
         server.shutdown()
 
 
